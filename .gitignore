@@ -1,0 +1,38 @@
+# Binaries & Executables
+*.exe
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# Build Output Directories
+build/
+bin/
+out/
+dist/
+
+# Runtime Logs & User State
+*.log
+LiteDock.log
+dock_order.txt
+
+# IDE / Editor Files
+.vs/
+.vscode/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.idea/
+
+# Operating System Files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
