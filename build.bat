@@ -8,8 +8,9 @@ g++ -std=c++20 -O3 -mwindows -municode ^
     src/DockWindow.cpp ^
     src/IconHelper.cpp ^
     src/TaskManager.cpp ^
+    src/WindowAnimator.cpp ^
     -o LiteDock.exe ^
-    -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lole32 -lshell32 -lgdi32 -luxtheme -luuid
+    -ld2d1 -ldwrite -lwindowscodecs -ldwmapi -lole32 -lshell32 -lgdi32 -luxtheme -lversion -luuid
 
 if %ERRORLEVEL% EQU 0 (
     echo [SUCCESS] LiteDock.exe compiled successfully! Size:

@@ -6,6 +6,7 @@
 #include "Config.h"
 #include "DockItem.h"
 #include "TaskManager.h"
+#include "WindowAnimator.h"
 
 class DockWindow {
 public:
@@ -115,6 +116,7 @@ private:
     int m_draggedIndex = -1;
     float m_dragStartX = 0.0f;
     float m_dragStartY = 0.0f;
+    HWND m_hForegroundBeforeClick = nullptr;
 
     // Context menu state & custom Direct2D popup window
     bool m_isMenuOpen = false;
@@ -161,4 +163,6 @@ private:
     static HHOOK s_hMenuMouseHook;
     static HHOOK s_hMenuKbdHook;
     static DockWindow* s_pMenuInstance;
+
+    WindowAnimator m_animator;
 };

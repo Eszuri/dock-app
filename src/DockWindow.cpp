@@ -14,6 +14,7 @@ DockWindow::~DockWindow() {
         DeregisterShellHookWindow(m_hWnd);
     }
     CleanupMenuWindow();
+    m_animator.Cleanup();
     CleanupDirect2D();
     CleanupDIBBuffer();
     if (m_hWnd) {
@@ -96,6 +97,8 @@ bool DockWindow::Initialize(HINSTANCE hInstance) {
     CreateDIBBuffer(m_canvasWidth, m_canvasHeight);
     InitDirect2D();
     InitMenuWindow(hInstance);
+    m_animator.Initialize(hInstance, m_pD2DFactory);
+    m_animator.SetDockHWnd(m_hWnd);
 
     // Load initial pinned apps & open windows
     RefreshTaskbarItems();
@@ -541,6 +544,13 @@ void DockWindow::RefreshTaskbarItems() {
         }
     }
 
+    // Pre-cache snapshots of active/visible open windows so animation is instant and ready
+    for (const auto& win : openWindows) {
+        if (win.hWnd && IsWindow(win.hWnd) && !IsIconic(win.hWnd) && IsWindowVisible(win.hWnd)) {
+            m_animator.PrecacheWindowSnapshot(win.hWnd);
+        }
+    }
+
     // Check if anything actually changed (item count, running states, foreground states)
     bool hasChanged = (m_items.size() != newItems.size());
     if (!hasChanged) {
@@ -905,6 +915,7 @@ void DockWindow::OnLButtonDown(int x, int y) {
     m_dragCandidateIndex = -1;
     m_isDragging = false;
     m_draggedIndex = -1;
+    m_hForegroundBeforeClick = GetForegroundWindow();
 
     for (size_t i = 0; i < m_items.size(); ++i) {
         const auto& item = m_items[i];
@@ -970,18 +981,53 @@ void DockWindow::OnLButtonUp(int x, int y) {
     if (targetIndex >= 0 && targetIndex < (int)m_items.size()) {
         auto& item = m_items[targetIndex];
 
-        item.bounceVelocity = 14.0f;
-        if (!m_isAnimating) {
-            m_isAnimating = true;
-            SetTimer(m_hWnd, TIMER_ANIM, 16, NULL);
-        }
-
-        // If window is open, toggle window state (focus / minimize)
+        // If window is open, toggle window state with macOS Genie animation on window app (dock stays still)
         if (item.hWnd && IsWindow(item.hWnd)) {
             bool wasFg = item.isForeground;
-            TaskManager::ToggleWindowState(item.hWnd, wasFg);
+            HWND hWnd = item.hWnd;
+            float iconX = (float)m_screenX + item.centerX;
+            float iconY = (float)m_screenY + item.y + (item.height / 2.0f);
+            float iconW = item.width;
+
+            HWND curFg = GetForegroundWindow();
+            HWND rootFg = curFg ? GetAncestor(curFg, GA_ROOT) : NULL;
+            HWND preFg = m_hForegroundBeforeClick;
+            HWND rootPreFg = preFg ? GetAncestor(preFg, GA_ROOT) : NULL;
+
+            bool isCurrentlyActive = (hWnd == curFg || hWnd == rootFg ||
+                                      hWnd == preFg || hWnd == rootPreFg ||
+                                      wasFg);
+
+            // Also check if this unminimized window is top-most visible on desktop
+            if (!isCurrentlyActive && !IsIconic(hWnd)) {
+                HWND topWnd = GetTopWindow(GetDesktopWindow());
+                while (topWnd && (!IsWindowVisible(topWnd) || IsIconic(topWnd) || topWnd == m_hWnd || topWnd == m_hMenuWnd)) {
+                    topWnd = GetNextWindow(topWnd, GW_HWNDNEXT);
+                }
+                if (topWnd == hWnd) {
+                    isCurrentlyActive = true;
+                }
+            }
+
+            bool isMinimized = IsIconic(hWnd);
+
+            if (isMinimized) {
+                // Animate window restoring out of dock icon
+                if (!m_animator.AnimateWindow(hWnd, iconX, iconY, iconW, false /* isRestoring */)) {
+                    TaskManager::ToggleWindowState(hWnd, wasFg);
+                }
+            } else if (isCurrentlyActive) {
+                // Animate window minimizing into dock icon
+                if (!m_animator.AnimateWindow(hWnd, iconX, iconY, iconW, true /* isMinimizing */)) {
+                    TaskManager::ToggleWindowState(hWnd, wasFg);
+                }
+            } else {
+                // Just bring background window to front
+                SetForegroundWindow(hWnd);
+                SetFocus(hWnd);
+            }
             // Brief delay to refresh active dot indicator
-            SetTimer(m_hWnd, TIMER_CHECK_RUNNING, 200, NULL);
+            SetTimer(m_hWnd, TIMER_CHECK_RUNNING, 300, NULL);
         } else {
             // Launch application via shortcut or exe path
             ShellExecuteW(
