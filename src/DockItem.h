@@ -2,7 +2,14 @@
 #include <windows.h>
 #include <d2d1.h>
 #include <string>
+#include <vector>
 #include "Config.h"
+
+struct DockWindowEntry {
+    HWND hWnd = nullptr;
+    std::wstring title;
+    bool isForeground = false;
+};
 
 struct DockItem {
     std::wstring name;          // Clean application friendly name
@@ -10,6 +17,7 @@ struct DockItem {
     std::wstring launchPath;    // Path to .lnk or executable
     std::wstring exeFilename;   // Lowercase exe filename (e.g. "notepad.exe")
     HWND hWnd = nullptr;        // Associated window handle
+    std::vector<DockWindowEntry> openWindows; // All open windows for this app
 
     bool isPinned = false;
     bool isRunning = false;
@@ -45,6 +53,7 @@ struct DockItem {
         , launchPath(std::move(other.launchPath))
         , exeFilename(std::move(other.exeFilename))
         , hWnd(other.hWnd)
+        , openWindows(std::move(other.openWindows))
         , isPinned(other.isPinned)
         , isRunning(other.isRunning)
         , isForeground(other.isForeground)
@@ -72,6 +81,7 @@ struct DockItem {
             launchPath = std::move(other.launchPath);
             exeFilename = std::move(other.exeFilename);
             hWnd = other.hWnd;
+            openWindows = std::move(other.openWindows);
             isPinned = other.isPinned;
             isRunning = other.isRunning;
             isForeground = other.isForeground;

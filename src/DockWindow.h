@@ -60,6 +60,20 @@ private:
     bool IsMenuOpen() const { return m_isMenuOpen; }
     RECT GetMenuScreenRect() const;
 
+    // Window App Preview Panel (Native Windows style)
+    void InitPreviewWindow(HINSTANCE hInstance);
+    void CleanupPreviewWindow();
+    void CreatePreviewDIBBuffer(int width, int height);
+    void ShowPreviewPanel(int itemIndex);
+    void HidePreviewPanel();
+    void HidePreviewPanelImmediate();
+    void RenderPreviewPanel();
+    void OnPreviewAnimTimer();
+    bool IsPreviewOpen() const { return m_isPreviewOpen; }
+
+    static LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    LRESULT HandlePreviewMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
     static LRESULT CALLBACK LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 
@@ -164,6 +178,55 @@ private:
     static HHOOK s_hMenuMouseHook;
     static HHOOK s_hMenuKbdHook;
     static DockWindow* s_pMenuInstance;
+
+    // Window App Preview Panel state (Multi-Window & Single-Window support)
+    static constexpr UINT_PTR TIMER_PREVIEW_HOVER = 1003;
+    static constexpr UINT_PTR TIMER_PREVIEW_CLOSE = 1004;
+    static constexpr UINT_PTR TIMER_PREVIEW_ANIM  = 1005;
+
+    struct PreviewCardItem {
+        HWND hWnd = nullptr;
+        std::wstring title;
+        ID2D1Bitmap* pThumbnail = nullptr;
+        int thumbSrcW = 0;
+        int thumbSrcH = 0;
+        D2D1_RECT_F cardRect = {};
+        D2D1_RECT_F closeBtnRect = {};
+        D2D1_RECT_F thumbRect = {};
+    };
+
+    HWND m_hPreviewWnd = nullptr;
+    HDC m_hdcPreviewMem = nullptr;
+    HBITMAP m_hPreviewBitmap = nullptr;
+    HBITMAP m_hPreviewOldBitmap = nullptr;
+    void* m_pvPreviewBits = nullptr;
+
+    bool m_isPreviewOpen = false;
+    bool m_isPreviewClosing = false;
+    int m_previewAppIndex = -1;
+    ID2D1Bitmap* m_pPreviewIcon = nullptr;
+
+    std::vector<PreviewCardItem> m_previewCards;
+    int m_previewHoveredCard = -1;
+    bool m_previewCloseHovered = false;
+    bool m_previewThumbHovered = false;
+
+    // Smooth transition / glide animation physics
+    float m_previewCurrentX = 0.0f;
+    float m_previewTargetX = 0.0f;
+    float m_previewCurrentY = 0.0f;
+    float m_previewTargetY = 0.0f;
+    float m_previewAlpha = 0.0f;
+    float m_previewTargetAlpha = 0.0f;
+
+    int m_previewWidth = 236;
+    int m_previewHeight = 168;
+    int m_previewScreenX = 0;
+    int m_previewScreenY = 0;
+    int m_previewBufferWidth = 0;
+    int m_previewBufferHeight = 0;
+
+    void EnsurePreviewBufferSize(int width, int height);
 
     WindowAnimator m_animator;
 };

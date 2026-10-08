@@ -13,6 +13,7 @@ DockWindow::~DockWindow() {
     if (m_hWnd) {
         DeregisterShellHookWindow(m_hWnd);
     }
+    CleanupPreviewWindow();
     CleanupMenuWindow();
     m_animator.Cleanup();
     CleanupDirect2D();
@@ -97,6 +98,7 @@ bool DockWindow::Initialize(HINSTANCE hInstance) {
     CreateDIBBuffer(m_canvasWidth, m_canvasHeight);
     InitDirect2D();
     InitMenuWindow(hInstance);
+    InitPreviewWindow(hInstance);
     m_animator.Initialize(hInstance, m_pD2DFactory);
     m_animator.SetDockHWnd(m_hWnd);
 
@@ -405,15 +407,19 @@ void DockWindow::RefreshTaskbarItems() {
 
                 for (size_t w = 0; w < openWindows.size(); ++w) {
                     if (!pin.resolvedExe.empty() && openWindows[w].exeFilename == pin.resolvedExe) {
-                        if (!item.isRunning) {
-                            item.isRunning = true;
+                        item.isRunning = true;
+                        DockWindowEntry entry;
+                        entry.hWnd = openWindows[w].hWnd;
+                        entry.title = openWindows[w].title;
+                        entry.isForeground = openWindows[w].isForeground;
+                        item.openWindows.push_back(entry);
+
+                        if (!item.hWnd || openWindows[w].isForeground) {
                             item.hWnd = openWindows[w].hWnd;
                             item.windowTitle = openWindows[w].title;
                         }
                         if (openWindows[w].isForeground) {
                             item.isForeground = true;
-                            item.hWnd = openWindows[w].hWnd;
-                            item.windowTitle = openWindows[w].title;
                         }
                         windowMatched[w] = true;
                     }
@@ -463,6 +469,12 @@ void DockWindow::RefreshTaskbarItems() {
 
                     for (size_t k = 0; k < openWindows.size(); ++k) {
                         if (!openWindows[k].exeFilename.empty() && openWindows[k].exeFilename == item.exeFilename) {
+                            DockWindowEntry entry;
+                            entry.hWnd = openWindows[k].hWnd;
+                            entry.title = openWindows[k].title;
+                            entry.isForeground = openWindows[k].isForeground;
+                            item.openWindows.push_back(entry);
+
                             if (openWindows[k].isForeground) {
                                 item.isForeground = true;
                                 item.hWnd = openWindows[k].hWnd;
@@ -494,15 +506,19 @@ void DockWindow::RefreshTaskbarItems() {
 
             for (size_t w = 0; w < openWindows.size(); ++w) {
                 if (!pin.resolvedExe.empty() && openWindows[w].exeFilename == pin.resolvedExe) {
-                    if (!item.isRunning) {
-                        item.isRunning = true;
+                    item.isRunning = true;
+                    DockWindowEntry entry;
+                    entry.hWnd = openWindows[w].hWnd;
+                    entry.title = openWindows[w].title;
+                    entry.isForeground = openWindows[w].isForeground;
+                    item.openWindows.push_back(entry);
+
+                    if (!item.hWnd || openWindows[w].isForeground) {
                         item.hWnd = openWindows[w].hWnd;
                         item.windowTitle = openWindows[w].title;
                     }
                     if (openWindows[w].isForeground) {
                         item.isForeground = true;
-                        item.hWnd = openWindows[w].hWnd;
-                        item.windowTitle = openWindows[w].title;
                     }
                     windowMatched[w] = true;
                 }
@@ -531,6 +547,12 @@ void DockWindow::RefreshTaskbarItems() {
 
             for (size_t k = w; k < openWindows.size(); ++k) {
                 if (!openWindows[k].exeFilename.empty() && openWindows[k].exeFilename == item.exeFilename) {
+                    DockWindowEntry entry;
+                    entry.hWnd = openWindows[k].hWnd;
+                    entry.title = openWindows[k].title;
+                    entry.isForeground = openWindows[k].isForeground;
+                    item.openWindows.push_back(entry);
+
                     if (openWindows[k].isForeground) {
                         item.isForeground = true;
                         item.hWnd = openWindows[k].hWnd;
@@ -551,7 +573,7 @@ void DockWindow::RefreshTaskbarItems() {
         }
     }
 
-    // Check if anything actually changed (item count, running states, foreground states)
+    // Check if anything actually changed (item count, running states, foreground states, window count)
     bool hasChanged = (m_items.size() != newItems.size());
     if (!hasChanged) {
         for (size_t i = 0; i < m_items.size(); ++i) {
@@ -559,7 +581,8 @@ void DockWindow::RefreshTaskbarItems() {
                 m_items[i].isRunning != newItems[i].isRunning ||
                 m_items[i].isForeground != newItems[i].isForeground ||
                 m_items[i].hWnd != newItems[i].hWnd ||
-                m_items[i].name != newItems[i].name) {
+                m_items[i].name != newItems[i].name ||
+                m_items[i].openWindows.size() != newItems[i].openWindows.size()) {
                 hasChanged = true;
                 break;
             }
@@ -571,6 +594,71 @@ void DockWindow::RefreshTaskbarItems() {
 
     // Adjust canvas size dynamically
     ResizeCanvas(m_items.size());
+
+    // Check if preview target windows are still open and running
+    if (m_isPreviewOpen) {
+        bool cardRemoved = false;
+        for (auto it = m_previewCards.begin(); it != m_previewCards.end(); ) {
+            if (!it->hWnd || !IsWindow(it->hWnd)) {
+                if (it->pThumbnail) {
+                    it->pThumbnail->Release();
+                    it->pThumbnail = nullptr;
+                }
+                it = m_previewCards.erase(it);
+                cardRemoved = true;
+            } else {
+                ++it;
+            }
+        }
+        if (m_previewCards.empty()) {
+            HidePreviewPanelImmediate();
+        } else if (cardRemoved) {
+            RECT rcWork = {};
+            SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+
+            size_t N = m_previewCards.size();
+            float cardW = 216.0f;
+            float cardH = 160.0f;
+            float pad = 8.0f;
+            float gap = 8.0f;
+            if (N == 1) {
+                cardW = 235.0f;
+                cardH = 167.0f;
+                pad = 0.5f;
+                gap = 0.0f;
+            }
+            int totalWidth = (int)std::ceil((pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap));
+            int totalHeight = (int)std::ceil((pad * 2.0f) + cardH);
+
+            m_previewWidth = totalWidth;
+            m_previewHeight = totalHeight;
+
+            if (m_previewAppIndex >= 0 && m_previewAppIndex < (int)m_items.size()) {
+                float iconScreenCenterX = (float)m_screenX + m_items[m_previewAppIndex].centerX;
+                int previewLeft = (int)std::round(iconScreenCenterX - (float)totalWidth / 2.0f);
+                if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
+                if (previewLeft + totalWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - totalWidth;
+                m_previewScreenX = previewLeft;
+                m_previewCurrentX = (float)previewLeft;
+                m_previewTargetX = (float)previewLeft;
+            }
+
+            for (size_t i = 0; i < m_previewCards.size(); ++i) {
+                float cx = pad + (float)i * (cardW + gap);
+                float cy = pad;
+                m_previewCards[i].cardRect = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
+                m_previewCards[i].closeBtnRect = D2D1::RectF(cx + cardW - 28.0f, cy + 4.0f, cx + cardW - 4.0f, cy + 26.0f);
+                m_previewCards[i].thumbRect = D2D1::RectF(cx + 6.0f, cy + 30.0f, cx + cardW - 6.0f, cy + cardH - 6.0f);
+            }
+
+            m_previewHoveredCard = -1;
+            m_previewCloseHovered = false;
+            m_previewThumbHovered = false;
+
+            SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, m_previewWidth, m_previewHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+            RenderPreviewPanel();
+        }
+    }
 
     // Update layout
     UpdateLayout(m_isMouseOverDock);
@@ -690,41 +778,44 @@ void DockWindow::Render() {
         }
     }
 
-    // 3. Draw Tooltip Badge for Hovered App (hidden during drag)
-    if (!m_isDragging && m_hoveredIndex >= 0 && m_hoveredIndex < (int)m_items.size()) {
+    // 3. Draw Tooltip Badge for Hovered App (hidden during drag, or for running apps with preview)
+    if (!m_isDragging && !m_isPreviewOpen && m_hoveredIndex >= 0 && m_hoveredIndex < (int)m_items.size()) {
         const auto& item = m_items[m_hoveredIndex];
-        const std::wstring& label = item.name;
+        // Only show text tooltip badge for non-running pinned apps
+        if (!item.isRunning || !item.hWnd) {
+            const std::wstring& label = item.name;
 
-        // Truncate tooltip if window title is very long
-        std::wstring displayLabel = label;
-        if (displayLabel.length() > 32) {
-            displayLabel = displayLabel.substr(0, 30) + L"...";
-        }
+            // Truncate tooltip if window title is very long
+            std::wstring displayLabel = label;
+            if (displayLabel.length() > 32) {
+                displayLabel = displayLabel.substr(0, 30) + L"...";
+            }
 
-        float textW = (float)displayLabel.length() * 8.0f + 22.0f;
-        float textH = 24.0f;
-        float ttLeft = item.centerX - (textW / 2.0f);
-        float ttRight = ttLeft + textW;
-        float ttBottom = item.y - 8.0f;
-        float ttTop = ttBottom - textH;
+            float textW = (float)displayLabel.length() * 8.0f + 22.0f;
+            float textH = 24.0f;
+            float ttLeft = item.centerX - (textW / 2.0f);
+            float ttRight = ttLeft + textW;
+            float ttBottom = item.y - 8.0f;
+            float ttTop = ttBottom - textH;
 
-        D2D1_ROUNDED_RECT ttRect = D2D1::RoundedRect(
-            D2D1::RectF(ttLeft, ttTop, ttRight, ttBottom),
-            6.0f, 6.0f
-        );
-
-        m_pDCRT->FillRoundedRectangle(&ttRect, m_pTooltipBgBrush);
-        m_pDCRT->DrawRoundedRectangle(&ttRect, m_pBorderBrush, 0.8f);
-
-        if (m_pTextFormat) {
-            D2D1_RECT_F layoutRect = D2D1::RectF(ttLeft, ttTop, ttRight, ttBottom);
-            m_pDCRT->DrawTextW(
-                displayLabel.c_str(),
-                (UINT32)displayLabel.length(),
-                m_pTextFormat,
-                layoutRect,
-                m_pTooltipTextBrush
+            D2D1_ROUNDED_RECT ttRect = D2D1::RoundedRect(
+                D2D1::RectF(ttLeft, ttTop, ttRight, ttBottom),
+                6.0f, 6.0f
             );
+
+            m_pDCRT->FillRoundedRectangle(&ttRect, m_pTooltipBgBrush);
+            m_pDCRT->DrawRoundedRectangle(&ttRect, m_pBorderBrush, 0.8f);
+
+            if (m_pTextFormat) {
+                D2D1_RECT_F layoutRect = D2D1::RectF(ttLeft, ttTop, ttRight, ttBottom);
+                m_pDCRT->DrawTextW(
+                    displayLabel.c_str(),
+                    (UINT32)displayLabel.length(),
+                    m_pTextFormat,
+                    layoutRect,
+                    m_pTooltipTextBrush
+                );
+            }
         }
     }
 
@@ -838,11 +929,60 @@ void DockWindow::OnMouseMove(int x, int y) {
             item.targetScale = 1.0f;
         }
     }
+
+    // Window App Preview Panel hover tracking (Fluent Windows style)
+    if (!m_isDragging && !m_isMenuOpen) {
+        int hoveredApp = -1;
+        for (size_t i = 0; i < m_items.size(); ++i) {
+            const auto& item = m_items[i];
+            if (m_mouseX >= item.x && m_mouseX <= (item.x + item.width) &&
+                m_mouseY >= item.y && m_mouseY <= (item.y + item.height + Config::DOCK_PADDING_Y)) {
+                if (item.isRunning && item.hWnd && IsWindow(item.hWnd)) {
+                    hoveredApp = (int)i;
+                }
+                break;
+            }
+        }
+
+        if (hoveredApp >= 0) {
+            if (m_isPreviewOpen || m_isPreviewClosing) {
+                if (hoveredApp != m_previewAppIndex || m_isPreviewClosing) {
+                    KillTimer(m_hWnd, TIMER_PREVIEW_CLOSE);
+                    ShowPreviewPanel(hoveredApp);
+                } else {
+                    KillTimer(m_hWnd, TIMER_PREVIEW_CLOSE);
+                    float iconScreenCenterX = (float)m_screenX + m_items[hoveredApp].centerX;
+                    int previewLeft = (int)std::round(iconScreenCenterX - (float)m_previewWidth / 2.0f);
+                    RECT rcWork = {};
+                    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+                    if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
+                    if (previewLeft + m_previewWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - m_previewWidth;
+                    if (std::fabs(m_previewTargetX - (float)previewLeft) > 0.5f) {
+                        m_previewTargetX = (float)previewLeft;
+                        SetTimer(m_hWnd, TIMER_PREVIEW_ANIM, 16, NULL);
+                    }
+                }
+            } else {
+                KillTimer(m_hWnd, TIMER_PREVIEW_CLOSE);
+                SetTimer(m_hWnd, TIMER_PREVIEW_HOVER, 250, NULL);
+            }
+        } else {
+            KillTimer(m_hWnd, TIMER_PREVIEW_HOVER);
+            if (m_isPreviewOpen && !m_isPreviewClosing) {
+                SetTimer(m_hWnd, TIMER_PREVIEW_CLOSE, 200, NULL);
+            }
+        }
+    }
 }
 
 void DockWindow::OnMouseLeave() {
     if (m_isDragging) {
         return; // Don't cancel active drag if mouse briefly slips outside
+    }
+
+    KillTimer(m_hWnd, TIMER_PREVIEW_HOVER);
+    if (m_isPreviewOpen) {
+        SetTimer(m_hWnd, TIMER_PREVIEW_CLOSE, 250, NULL);
     }
 
     m_isMouseOverDock = false;
@@ -900,6 +1040,21 @@ void DockWindow::OnTimer() {
     }
 
     UpdateLayout(!m_isDragging);
+
+    // Keep preview target position smoothly following icon as it scales/slides
+    if (m_isPreviewOpen && m_previewAppIndex >= 0 && m_previewAppIndex < (int)m_items.size()) {
+        float iconScreenCenterX = (float)m_screenX + m_items[m_previewAppIndex].centerX;
+        int previewLeft = (int)std::round(iconScreenCenterX - (float)m_previewWidth / 2.0f);
+        RECT rcWork = {};
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+        if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
+        if (previewLeft + m_previewWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - m_previewWidth;
+        if (std::fabs(m_previewTargetX - (float)previewLeft) > 0.5f) {
+            m_previewTargetX = (float)previewLeft;
+            SetTimer(m_hWnd, TIMER_PREVIEW_ANIM, 16, NULL);
+        }
+    }
+
     Render();
 
     if (!m_isMouseOverDock && !m_isDragging && !stillAnimating) {
@@ -909,6 +1064,7 @@ void DockWindow::OnTimer() {
 }
 
 void DockWindow::OnLButtonDown(int x, int y) {
+    HidePreviewPanelImmediate();
     m_isLButtonDown = true;
     m_dragStartX = (float)x;
     m_dragStartY = (float)y;
@@ -1853,6 +2009,7 @@ void DockWindow::ShowWindowSystemMenu(HWND hWnd, int screenX, int screenY) {
 }
 
 void DockWindow::OnRButtonUp(int x, int y) {
+    HidePreviewPanelImmediate();
     if (m_isDragging || m_isMenuOpen) return;
 
     int clickedIndex = -1;
@@ -1963,6 +2120,36 @@ LRESULT DockWindow::HandleMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
             OnTimer();
         } else if (wParam == TIMER_CHECK_RUNNING) {
             RefreshTaskbarItems();
+        } else if (wParam == TIMER_PREVIEW_HOVER) {
+            KillTimer(hWnd, TIMER_PREVIEW_HOVER);
+            if (!m_isDragging && !m_isMenuOpen && m_isMouseOverDock) {
+                int hoveredApp = -1;
+                for (size_t i = 0; i < m_items.size(); ++i) {
+                    const auto& item = m_items[i];
+                    if (m_mouseX >= item.x && m_mouseX <= (item.x + item.width) &&
+                        m_mouseY >= item.y && m_mouseY <= (item.y + item.height + Config::DOCK_PADDING_Y)) {
+                        if (item.isRunning && item.hWnd && IsWindow(item.hWnd)) {
+                            hoveredApp = (int)i;
+                        }
+                        break;
+                    }
+                }
+                if (hoveredApp >= 0) {
+                    ShowPreviewPanel(hoveredApp);
+                }
+            }
+        } else if (wParam == TIMER_PREVIEW_CLOSE) {
+            KillTimer(hWnd, TIMER_PREVIEW_CLOSE);
+            if (m_isPreviewOpen) {
+                POINT pt;
+                GetCursorPos(&pt);
+                HWND hUnder = WindowFromPoint(pt);
+                if (hUnder != m_hPreviewWnd && hUnder != m_hWnd) {
+                    HidePreviewPanel();
+                }
+            }
+        } else if (wParam == TIMER_PREVIEW_ANIM) {
+            OnPreviewAnimTimer();
         }
         return 0;
 
@@ -1979,3 +2166,667 @@ LRESULT DockWindow::HandleMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPa
 
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
+
+void DockWindow::InitPreviewWindow(HINSTANCE hInstance) {
+    WNDCLASSEXW wc = { sizeof(WNDCLASSEXW) };
+    wc.lpfnWndProc = DockWindow::PreviewWndProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = L"LiteDockPreviewWindowClass";
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.style = CS_DROPSHADOW;
+
+    RegisterClassExW(&wc);
+
+    CreatePreviewDIBBuffer(m_previewWidth, m_previewHeight);
+
+    m_hPreviewWnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        wc.lpszClassName,
+        L"LiteDockPreview",
+        WS_POPUP,
+        0, 0, m_previewWidth, m_previewHeight,
+        NULL, NULL, hInstance, this
+    );
+
+    if (m_hPreviewWnd) {
+        BOOL darkMode = TRUE;
+        DwmSetWindowAttribute(m_hPreviewWnd, 20, &darkMode, sizeof(darkMode)); // DWMWA_USE_IMMERSIVE_DARK_MODE
+    }
+}
+
+void DockWindow::CleanupPreviewWindow() {
+    HidePreviewPanelImmediate();
+
+    if (m_hPreviewBitmap) {
+        if (m_hdcPreviewMem && m_hPreviewOldBitmap) SelectObject(m_hdcPreviewMem, m_hPreviewOldBitmap);
+        DeleteObject(m_hPreviewBitmap);
+        m_hPreviewBitmap = nullptr;
+    }
+    if (m_hdcPreviewMem) {
+        DeleteDC(m_hdcPreviewMem);
+        m_hdcPreviewMem = nullptr;
+    }
+    if (m_hPreviewWnd) {
+        DestroyWindow(m_hPreviewWnd);
+        m_hPreviewWnd = nullptr;
+    }
+}
+
+void DockWindow::CreatePreviewDIBBuffer(int width, int height) {
+    if (m_hPreviewBitmap) {
+        if (m_hdcPreviewMem && m_hPreviewOldBitmap) SelectObject(m_hdcPreviewMem, m_hPreviewOldBitmap);
+        DeleteObject(m_hPreviewBitmap);
+        m_hPreviewBitmap = nullptr;
+    }
+    if (m_hdcPreviewMem) {
+        DeleteDC(m_hdcPreviewMem);
+        m_hdcPreviewMem = nullptr;
+    }
+
+    m_previewBufferWidth = width;
+    m_previewBufferHeight = height;
+
+    HDC hdcScreen = GetDC(NULL);
+    m_hdcPreviewMem = CreateCompatibleDC(hdcScreen);
+
+    BITMAPINFO bmi = {};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // Top-down DIB
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    m_hPreviewBitmap = CreateDIBSection(m_hdcPreviewMem, &bmi, DIB_RGB_COLORS, &m_pvPreviewBits, NULL, 0);
+    m_hPreviewOldBitmap = (HBITMAP)SelectObject(m_hdcPreviewMem, m_hPreviewBitmap);
+
+    ReleaseDC(NULL, hdcScreen);
+}
+
+void DockWindow::EnsurePreviewBufferSize(int width, int height) {
+    if (width > m_previewBufferWidth || height > m_previewBufferHeight) {
+        int newW = std::max(width, m_previewBufferWidth);
+        int newH = std::max(height, m_previewBufferHeight);
+        CreatePreviewDIBBuffer(newW, newH);
+    }
+}
+
+void DockWindow::ShowPreviewPanel(int itemIndex) {
+    if (itemIndex < 0 || itemIndex >= (int)m_items.size()) {
+        HidePreviewPanel();
+        return;
+    }
+
+    const auto& item = m_items[itemIndex];
+    if (!item.isRunning) {
+        HidePreviewPanel();
+        return;
+    }
+
+    if (m_isMenuOpen || m_isDragging) {
+        return;
+    }
+
+    // Gather all valid windows for this app
+    std::vector<DockWindowEntry> validWindows;
+    for (const auto& win : item.openWindows) {
+        if (win.hWnd && IsWindow(win.hWnd)) {
+            bool alreadyIn = false;
+            for (const auto& existing : validWindows) {
+                if (existing.hWnd == win.hWnd) {
+                    alreadyIn = true;
+                    break;
+                }
+            }
+            if (alreadyIn) continue;
+
+            DockWindowEntry e = win;
+            wchar_t titleBuf[256] = {};
+            if (GetWindowTextW(e.hWnd, titleBuf, 256) > 0) {
+                e.title = titleBuf;
+            }
+            if (e.title.empty()) {
+                e.title = item.name;
+            }
+            validWindows.push_back(e);
+        }
+    }
+    if (validWindows.empty() && item.hWnd && IsWindow(item.hWnd)) {
+        DockWindowEntry e;
+        e.hWnd = item.hWnd;
+        e.title = !item.windowTitle.empty() ? item.windowTitle : item.name;
+        e.isForeground = item.isForeground;
+        validWindows.push_back(e);
+    }
+
+    if (validWindows.empty()) {
+        HidePreviewPanel();
+        return;
+    }
+
+    RECT rcWork = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+
+    size_t N = validWindows.size();
+    float cardW = 216.0f;
+    float cardH = 160.0f;
+    float pad = 8.0f;
+    float gap = 8.0f;
+
+    if (N == 1) {
+        cardW = 235.0f;
+        cardH = 167.0f;
+        pad = 0.5f;
+        gap = 0.0f;
+    } else {
+        float maxTotalW = (float)(rcWork.right - rcWork.left - 40);
+        float neededW = (pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap);
+        if (neededW > maxTotalW) {
+            float avail = maxTotalW - (pad * 2.0f) - ((float)(N - 1) * gap);
+            cardW = std::max(150.0f, avail / (float)N);
+        }
+    }
+
+    int totalWidth = (int)std::ceil((pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap));
+    int totalHeight = (int)std::ceil((pad * 2.0f) + cardH);
+
+    float iconScreenCenterX = (float)m_screenX + item.centerX;
+    int previewLeft = (int)std::round(iconScreenCenterX - (float)totalWidth / 2.0f);
+    if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
+    if (previewLeft + totalWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - totalWidth;
+
+    int previewTop = m_screenY + (int)m_dockPillRect.rect.top - totalHeight - 12;
+    if (previewTop < rcWork.top + 8) previewTop = rcWork.top + 8;
+
+    EnsurePreviewBufferSize(totalWidth, totalHeight);
+
+    // Free existing preview cards thumbnails
+    for (auto& card : m_previewCards) {
+        if (card.pThumbnail) {
+            card.pThumbnail->Release();
+            card.pThumbnail = nullptr;
+        }
+    }
+    m_previewCards.clear();
+
+    // Create cards for each window
+    for (size_t i = 0; i < N; ++i) {
+        PreviewCardItem card;
+        card.hWnd = validWindows[i].hWnd;
+        card.title = validWindows[i].title;
+
+        float cx = pad + (float)i * (cardW + gap);
+        float cy = pad;
+        card.cardRect = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
+        card.closeBtnRect = D2D1::RectF(cx + cardW - 28.0f, cy + 4.0f, cx + cardW - 4.0f, cy + 26.0f);
+        card.thumbRect = D2D1::RectF(cx + 6.0f, cy + 30.0f, cx + cardW - 6.0f, cy + cardH - 6.0f);
+
+        if (m_pDCRT) {
+            m_animator.GetSnapshotBitmap(card.hWnd, m_pDCRT, &card.pThumbnail, card.thumbSrcW, card.thumbSrcH);
+        }
+        m_previewCards.push_back(std::move(card));
+    }
+
+    bool wasAlreadyVisible = (m_isPreviewOpen || m_isPreviewClosing) && (m_previewAlpha > 0.08f);
+    if (!wasAlreadyVisible) {
+        m_previewCurrentX = (float)previewLeft;
+        m_previewCurrentY = (float)previewTop + 8.0f;
+        m_previewAlpha = 0.0f;
+        m_previewWidth = totalWidth;
+        m_previewHeight = totalHeight;
+        m_previewScreenX = previewLeft;
+        m_previewScreenY = previewTop + 8;
+        SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, previewLeft, previewTop + 8, totalWidth, totalHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    } else {
+        m_previewWidth = totalWidth;
+        m_previewHeight = totalHeight;
+        SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, totalWidth, totalHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    }
+
+    m_previewTargetX = (float)previewLeft;
+    m_previewTargetY = (float)previewTop;
+    m_previewTargetAlpha = 1.0f;
+    m_previewWidth = totalWidth;
+    m_previewHeight = totalHeight;
+    m_isPreviewOpen = true;
+    m_isPreviewClosing = false;
+    m_previewAppIndex = itemIndex;
+    m_pPreviewIcon = item.pBitmap;
+    m_previewHoveredCard = -1;
+    m_previewCloseHovered = false;
+    m_previewThumbHovered = false;
+
+    SetTimer(m_hWnd, TIMER_PREVIEW_ANIM, 16, NULL);
+
+    RenderPreviewPanel();
+    Render();
+}
+
+void DockWindow::HidePreviewPanel() {
+    if (!m_isPreviewOpen && !m_isPreviewClosing) return;
+
+    KillTimer(m_hWnd, TIMER_PREVIEW_HOVER);
+    KillTimer(m_hWnd, TIMER_PREVIEW_CLOSE);
+
+    m_previewTargetAlpha = 0.0f;
+    m_isPreviewClosing = true;
+
+    SetTimer(m_hWnd, TIMER_PREVIEW_ANIM, 16, NULL);
+}
+
+void DockWindow::HidePreviewPanelImmediate() {
+    KillTimer(m_hWnd, TIMER_PREVIEW_HOVER);
+    KillTimer(m_hWnd, TIMER_PREVIEW_CLOSE);
+    KillTimer(m_hWnd, TIMER_PREVIEW_ANIM);
+
+    if (m_hPreviewWnd) {
+        ShowWindow(m_hPreviewWnd, SW_HIDE);
+    }
+
+    for (auto& card : m_previewCards) {
+        if (card.pThumbnail) {
+            card.pThumbnail->Release();
+            card.pThumbnail = nullptr;
+        }
+    }
+    m_previewCards.clear();
+
+    m_pPreviewIcon = nullptr;
+    m_isPreviewOpen = false;
+    m_isPreviewClosing = false;
+    m_previewAppIndex = -1;
+    m_previewHoveredCard = -1;
+    m_previewCloseHovered = false;
+    m_previewThumbHovered = false;
+    m_previewAlpha = 0.0f;
+    m_previewTargetAlpha = 0.0f;
+
+    Render();
+}
+
+void DockWindow::OnPreviewAnimTimer() {
+    bool stillAnimating = false;
+
+    // 1. Smooth horizontal glide lerp
+    float diffX = m_previewTargetX - m_previewCurrentX;
+    if (std::fabs(diffX) > 0.5f) {
+        m_previewCurrentX += diffX * 0.32f;
+        stillAnimating = true;
+    } else {
+        m_previewCurrentX = m_previewTargetX;
+    }
+
+    // 2. Smooth vertical slide lerp
+    float diffY = m_previewTargetY - m_previewCurrentY;
+    if (std::fabs(diffY) > 0.5f) {
+        m_previewCurrentY += diffY * 0.32f;
+        stillAnimating = true;
+    } else {
+        m_previewCurrentY = m_previewTargetY;
+    }
+
+    // 3. Smooth hardware alpha fade
+    float diffAlpha = m_previewTargetAlpha - m_previewAlpha;
+    if (std::fabs(diffAlpha) > 0.02f) {
+        m_previewAlpha += diffAlpha * 0.35f;
+        stillAnimating = true;
+    } else {
+        m_previewAlpha = m_previewTargetAlpha;
+    }
+
+    if (m_isPreviewClosing && m_previewAlpha <= 0.04f) {
+        HidePreviewPanelImmediate();
+        return;
+    }
+
+    m_previewScreenX = (int)std::round(m_previewCurrentX);
+    m_previewScreenY = (int)std::round(m_previewCurrentY);
+
+    SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, m_previewWidth, m_previewHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+
+    RenderPreviewPanel();
+
+    if (!stillAnimating) {
+        KillTimer(m_hWnd, TIMER_PREVIEW_ANIM);
+    }
+}
+
+void DockWindow::RenderPreviewPanel() {
+    if (!m_pDCRT || !m_hdcPreviewMem || m_previewWidth <= 0 || m_previewHeight <= 0 || m_previewCards.empty()) return;
+
+    RECT rc = { 0, 0, m_previewWidth, m_previewHeight };
+    m_pDCRT->BindDC(m_hdcPreviewMem, &rc);
+    m_pDCRT->BeginDraw();
+    m_pDCRT->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+
+    // 0. If multiple cards exist, render modern dark acrylic flyout container
+    if (m_previewCards.size() > 1) {
+        D2D1_ROUNDED_RECT rcPanel = D2D1::RoundedRect(
+            D2D1::RectF(0.5f, 0.5f, (float)m_previewWidth - 0.5f, (float)m_previewHeight - 0.5f),
+            9.0f, 9.0f
+        );
+        m_pDCRT->FillRoundedRectangle(&rcPanel, m_pMenuBgBrush);
+        m_pDCRT->DrawRoundedRectangle(&rcPanel, m_pMenuBorderBrush, 1.0f);
+    }
+
+    for (size_t i = 0; i < m_previewCards.size(); ++i) {
+        const auto& card = m_previewCards[i];
+        bool isCardHovered = ((int)i == m_previewHoveredCard);
+
+        // 1. Card container
+        D2D1_ROUNDED_RECT rcCard = D2D1::RoundedRect(card.cardRect, 7.0f, 7.0f);
+        if (m_previewCards.size() > 1) {
+            m_pDCRT->FillRoundedRectangle(&rcCard, isCardHovered ? m_pMenuHoverBrush : m_pTooltipBgBrush);
+            m_pDCRT->DrawRoundedRectangle(&rcCard, isCardHovered ? m_pActiveIndicatorBrush : m_pMenuBorderBrush, isCardHovered ? 1.4f : 1.0f);
+        } else {
+            m_pDCRT->FillRoundedRectangle(&rcCard, isCardHovered ? m_pMenuHoverBrush : m_pMenuBgBrush);
+            m_pDCRT->DrawRoundedRectangle(&rcCard, isCardHovered ? m_pActiveIndicatorBrush : m_pMenuBorderBrush, isCardHovered ? 1.2f : 1.0f);
+        }
+
+        // 2. Card Header
+        // 2a. App Icon (16x16)
+        float iconX = card.cardRect.left + 10.0f;
+        float iconY = card.cardRect.top + 7.0f;
+        D2D1_RECT_F iconDst = D2D1::RectF(iconX, iconY, iconX + 16.0f, iconY + 16.0f);
+        if (m_pPreviewIcon) {
+            m_pDCRT->DrawBitmap(m_pPreviewIcon, iconDst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+
+        // 2b. Close Button '×'
+        D2D1_ROUNDED_RECT closeBox = D2D1::RoundedRect(card.closeBtnRect, 4.0f, 4.0f);
+        bool isCloseHovered = (isCardHovered && m_previewCloseHovered);
+        if (isCloseHovered) {
+            m_pDCRT->FillRoundedRectangle(&closeBox, m_pMenuCloseRedBrush);
+        }
+        if (m_pTextFormat) {
+            m_pDCRT->DrawTextW(
+                L"\u00D7", 1,
+                m_pTextFormat,
+                card.closeBtnRect,
+                isCloseHovered ? m_pMenuWhiteBrush : m_pMenuTextBrush
+            );
+        }
+
+        // 2c. Window Title
+        float titleX = iconX + 22.0f;
+        float titleW = card.closeBtnRect.left - titleX - 4.0f;
+        D2D1_RECT_F titleRect = D2D1::RectF(titleX, card.cardRect.top + 5.0f, titleX + titleW, card.cardRect.top + 25.0f);
+
+        std::wstring displayTitle = card.title;
+        if (displayTitle.length() > 22) {
+            displayTitle = displayTitle.substr(0, 20) + L"...";
+        }
+        if (m_pMenuTextFormat) {
+            m_pDCRT->DrawTextW(
+                displayTitle.c_str(),
+                (UINT32)displayTitle.length(),
+                m_pMenuTextFormat,
+                titleRect,
+                m_pMenuWhiteBrush
+            );
+        }
+
+        // 3. Recessed Thumbnail Well
+        D2D1_ROUNDED_RECT wellBox = D2D1::RoundedRect(card.thumbRect, 6.0f, 6.0f);
+        m_pDCRT->FillRoundedRectangle(&wellBox, m_pTooltipBgBrush);
+        bool isThumbHovered = (isCardHovered && m_previewThumbHovered);
+        m_pDCRT->DrawRoundedRectangle(
+            &wellBox,
+            isThumbHovered ? m_pActiveIndicatorBrush : m_pMenuSeparatorBrush,
+            isThumbHovered ? 1.5f : 1.0f
+        );
+
+        // 4. Thumbnail Image inside well
+        float wellW = card.thumbRect.right - card.thumbRect.left;
+        float wellH = card.thumbRect.bottom - card.thumbRect.top;
+        if (card.pThumbnail && card.thumbSrcW > 0 && card.thumbSrcH > 0) {
+            float innerPadding = 4.0f;
+            float maxThumbW = wellW - (innerPadding * 2.0f);
+            float maxThumbH = wellH - (innerPadding * 2.0f);
+
+            float scale = std::min(maxThumbW / (float)card.thumbSrcW, maxThumbH / (float)card.thumbSrcH);
+            float thumbW = std::floor((float)card.thumbSrcW * scale);
+            float thumbH = std::floor((float)card.thumbSrcH * scale);
+            float thumbX = card.thumbRect.left + innerPadding + std::floor((maxThumbW - thumbW) / 2.0f);
+            float thumbY = card.thumbRect.top + innerPadding + std::floor((maxThumbH - thumbH) / 2.0f);
+
+            D2D1_RECT_F thumbDst = D2D1::RectF(thumbX, thumbY, thumbX + thumbW, thumbY + thumbH);
+            m_pDCRT->DrawBitmap(card.pThumbnail, thumbDst, 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            m_pDCRT->DrawRectangle(thumbDst, m_pMenuBorderBrush, 1.0f);
+        } else {
+            float centerIconX = card.thumbRect.left + (wellW - 32.0f) / 2.0f;
+            float centerIconY = card.thumbRect.top + (wellH - 32.0f) / 2.0f - 8.0f;
+            if (m_pPreviewIcon) {
+                D2D1_RECT_F fallbackIconDst = D2D1::RectF(centerIconX, centerIconY, centerIconX + 32.0f, centerIconY + 32.0f);
+                m_pDCRT->DrawBitmap(m_pPreviewIcon, fallbackIconDst, 0.7f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+            }
+            if (m_pTextFormat) {
+                D2D1_RECT_F fallbackTextDst = D2D1::RectF(card.thumbRect.left, centerIconY + 36.0f, card.thumbRect.right, centerIconY + 54.0f);
+                m_pDCRT->DrawTextW(
+                    L"Click to switch", 15,
+                    m_pTextFormat,
+                    fallbackTextDst,
+                    m_pMenuBorderBrush
+                );
+            }
+        }
+    }
+
+    HRESULT hr = m_pDCRT->EndDraw();
+    if (FAILED(hr)) return;
+
+    // Update Layered Window with Premultiplied Alpha multiplied by hardware m_previewAlpha
+    HDC hdcScreen = GetDC(NULL);
+    POINT ptSrc = { 0, 0 };
+    SIZE sz = { m_previewWidth, m_previewHeight };
+    POINT ptDst = { m_previewScreenX, m_previewScreenY };
+
+    BLENDFUNCTION blend = {};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.BlendFlags = 0;
+    blend.SourceConstantAlpha = (BYTE)std::clamp((int)(m_previewAlpha * 255.0f), 0, 255);
+    blend.AlphaFormat = AC_SRC_ALPHA;
+
+    UpdateLayeredWindow(
+        m_hPreviewWnd,
+        hdcScreen,
+        &ptDst,
+        &sz,
+        m_hdcPreviewMem,
+        &ptSrc,
+        0,
+        &blend,
+        ULW_ALPHA
+    );
+
+    ReleaseDC(NULL, hdcScreen);
+}
+
+LRESULT CALLBACK DockWindow::PreviewWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    DockWindow* pThis = nullptr;
+    if (msg == WM_NCCREATE) {
+        CREATESTRUCTW* pCreate = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        pThis = reinterpret_cast<DockWindow*>(pCreate->lpCreateParams);
+        if (pThis) {
+            pThis->m_hPreviewWnd = hWnd;
+            SetWindowLongPtrW(hWnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pThis));
+        }
+        return DefWindowProcW(hWnd, msg, wParam, lParam);
+    } else {
+        pThis = reinterpret_cast<DockWindow*>(GetWindowLongPtrW(hWnd, GWLP_USERDATA));
+    }
+
+    if (pThis) {
+        return pThis->HandlePreviewMessage(hWnd, msg, wParam, lParam);
+    }
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+LRESULT DockWindow::HandlePreviewMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    switch (msg) {
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+
+    case WM_NCHITTEST:
+        return HTCLIENT;
+
+    case WM_MOUSEMOVE: {
+        KillTimer(m_hWnd, TIMER_PREVIEW_CLOSE);
+
+        TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT) };
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hWnd;
+        TrackMouseEvent(&tme);
+
+        int mx = GET_X_LPARAM(lParam);
+        int my = GET_Y_LPARAM(lParam);
+
+        int newHoveredCard = -1;
+        bool newCloseHovered = false;
+        bool newThumbHovered = false;
+
+        for (size_t i = 0; i < m_previewCards.size(); ++i) {
+            const auto& c = m_previewCards[i];
+            if (mx >= c.cardRect.left && mx <= c.cardRect.right &&
+                my >= c.cardRect.top && my <= c.cardRect.bottom) {
+                newHoveredCard = (int)i;
+                if (mx >= c.closeBtnRect.left && mx <= c.closeBtnRect.right &&
+                    my >= c.closeBtnRect.top && my <= c.closeBtnRect.bottom) {
+                    newCloseHovered = true;
+                } else if (mx >= c.thumbRect.left && mx <= c.thumbRect.right &&
+                           my >= c.thumbRect.top && my <= c.thumbRect.bottom) {
+                    newThumbHovered = true;
+                }
+                break;
+            }
+        }
+
+        if (newHoveredCard != m_previewHoveredCard ||
+            newCloseHovered != m_previewCloseHovered ||
+            newThumbHovered != m_previewThumbHovered) {
+            m_previewHoveredCard = newHoveredCard;
+            m_previewCloseHovered = newCloseHovered;
+            m_previewThumbHovered = newThumbHovered;
+            RenderPreviewPanel();
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE: {
+        m_previewHoveredCard = -1;
+        m_previewCloseHovered = false;
+        m_previewThumbHovered = false;
+        RenderPreviewPanel();
+
+        SetTimer(m_hWnd, TIMER_PREVIEW_CLOSE, 250, NULL);
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        if (m_previewHoveredCard >= 0 && m_previewHoveredCard < (int)m_previewCards.size()) {
+            HWND targetHWnd = m_previewCards[m_previewHoveredCard].hWnd;
+
+            if (m_previewCloseHovered) {
+                if (targetHWnd && IsWindow(targetHWnd)) {
+                    PostMessageW(targetHWnd, WM_CLOSE, 0, 0);
+                }
+
+                if (m_previewCards.size() > 1) {
+                    if (m_previewCards[m_previewHoveredCard].pThumbnail) {
+                        m_previewCards[m_previewHoveredCard].pThumbnail->Release();
+                    }
+                    m_previewCards.erase(m_previewCards.begin() + m_previewHoveredCard);
+
+                    // Re-layout remaining cards
+                    RECT rcWork = {};
+                    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+
+                    size_t N = m_previewCards.size();
+                    float cardW = 216.0f;
+                    float cardH = 160.0f;
+                    float pad = 8.0f;
+                    float gap = 8.0f;
+                    if (N == 1) {
+                        cardW = 235.0f;
+                        cardH = 167.0f;
+                        pad = 0.5f;
+                        gap = 0.0f;
+                    }
+                    int totalWidth = (int)std::ceil((pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap));
+                    int totalHeight = (int)std::ceil((pad * 2.0f) + cardH);
+
+                    m_previewWidth = totalWidth;
+                    m_previewHeight = totalHeight;
+
+                    // Re-center flyout above the dock icon
+                    if (m_previewAppIndex >= 0 && m_previewAppIndex < (int)m_items.size()) {
+                        float iconScreenCenterX = (float)m_screenX + m_items[m_previewAppIndex].centerX;
+                        int previewLeft = (int)std::round(iconScreenCenterX - (float)totalWidth / 2.0f);
+                        if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
+                        if (previewLeft + totalWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - totalWidth;
+                        m_previewScreenX = previewLeft;
+                        m_previewCurrentX = (float)previewLeft;
+                        m_previewTargetX = (float)previewLeft;
+                    }
+
+                    for (size_t i = 0; i < m_previewCards.size(); ++i) {
+                        float cx = pad + (float)i * (cardW + gap);
+                        float cy = pad;
+                        m_previewCards[i].cardRect = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
+                        m_previewCards[i].closeBtnRect = D2D1::RectF(cx + cardW - 28.0f, cy + 4.0f, cx + cardW - 4.0f, cy + 26.0f);
+                        m_previewCards[i].thumbRect = D2D1::RectF(cx + 6.0f, cy + 30.0f, cx + cardW - 6.0f, cy + cardH - 6.0f);
+                    }
+
+                    m_previewHoveredCard = -1;
+                    m_previewCloseHovered = false;
+                    m_previewThumbHovered = false;
+
+                    SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, m_previewWidth, m_previewHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+                    RenderPreviewPanel();
+                } else {
+                    HidePreviewPanelImmediate();
+                }
+                return 0;
+            }
+
+            // Clicked thumbnail or card
+            int appIdx = m_previewAppIndex;
+            HidePreviewPanelImmediate();
+            if (targetHWnd && IsWindow(targetHWnd)) {
+                if (IsIconic(targetHWnd)) {
+                    if (appIdx >= 0 && appIdx < (int)m_items.size()) {
+                        float iconX = (float)m_screenX + m_items[appIdx].centerX;
+                        float iconY = (float)m_screenY + m_items[appIdx].y + (m_items[appIdx].height / 2.0f);
+                        float iconW = m_items[appIdx].width;
+                        m_animator.AnimateWindow(targetHWnd, iconX, iconY, iconW, false);
+                    } else {
+                        ShowWindow(targetHWnd, SW_RESTORE);
+                        SetForegroundWindow(targetHWnd);
+                    }
+                } else {
+                    DWORD targetThread = GetWindowThreadProcessId(targetHWnd, NULL);
+                    DWORD curThread = GetCurrentThreadId();
+                    AttachThreadInput(curThread, targetThread, TRUE);
+                    SetForegroundWindow(targetHWnd);
+                    BringWindowToTop(targetHWnd);
+                    AttachThreadInput(curThread, targetThread, FALSE);
+                }
+            }
+            return 0;
+        }
+        return 0;
+    }
+
+    case WM_RBUTTONUP: {
+        int appIdx = m_previewAppIndex;
+        HidePreviewPanelImmediate();
+        if (appIdx >= 0 && appIdx < (int)m_items.size()) {
+            ShowModernAppContextMenu(appIdx);
+        }
+        return 0;
+    }
+    }
+
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+

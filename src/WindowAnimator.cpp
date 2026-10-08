@@ -229,6 +229,57 @@ void WindowAnimator::PrecacheWindowSnapshot(HWND hWnd) {
     }
 }
 
+bool WindowAnimator::GetSnapshotBitmap(HWND hWnd, ID2D1RenderTarget* pRT, ID2D1Bitmap** ppBitmap, int& outW, int& outH) {
+    if (!hWnd || !IsWindow(hWnd) || !pRT || !ppBitmap) return false;
+    *ppBitmap = nullptr;
+
+    int bmpW = 0, bmpH = 0;
+    std::vector<BYTE> pixelBytes;
+
+    auto it = m_snapshotCache.find(hWnd);
+    bool isIconic = IsIconic(hWnd);
+    if (it != m_snapshotCache.end() && !it->second.pixelData.empty() && isIconic) {
+        bmpW = it->second.width;
+        bmpH = it->second.height;
+        pixelBytes = it->second.pixelData;
+    } else {
+        HBITMAP hCapBmp = nullptr;
+        void* pBits = nullptr;
+        if (CaptureWindow(hWnd, hCapBmp, pBits, bmpW, bmpH) && hCapBmp && pBits && bmpW > 0 && bmpH > 0) {
+            size_t byteCount = (size_t)bmpW * bmpH * 4;
+            pixelBytes.resize(byteCount);
+            memcpy(pixelBytes.data(), pBits, byteCount);
+
+            CachedSnapshot snap;
+            snap.width = bmpW;
+            snap.height = bmpH;
+            if (FAILED(DwmGetWindowAttribute(hWnd, DWMWA_EXTENDED_FRAME_BOUNDS, &snap.winRect, sizeof(snap.winRect)))) {
+                GetWindowRect(hWnd, &snap.winRect);
+            }
+            snap.isMaximized = IsZoomed(hWnd);
+            snap.pixelData = pixelBytes;
+            m_snapshotCache[hWnd] = snap;
+            DeleteObject(hCapBmp);
+        } else if (it != m_snapshotCache.end() && !it->second.pixelData.empty()) {
+            bmpW = it->second.width;
+            bmpH = it->second.height;
+            pixelBytes = it->second.pixelData;
+        }
+    }
+
+    if (pixelBytes.empty() || bmpW <= 0 || bmpH <= 0) return false;
+
+    outW = bmpW;
+    outH = bmpH;
+
+    D2D1_BITMAP_PROPERTIES bmpProps = D2D1::BitmapProperties(
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)
+    );
+    D2D1_SIZE_U sz = D2D1::SizeU((UINT32)bmpW, (UINT32)bmpH);
+    HRESULT hr = pRT->CreateBitmap(sz, pixelBytes.data(), bmpW * 4, bmpProps, ppBitmap);
+    return SUCCEEDED(hr) && (*ppBitmap != nullptr);
+}
+
 bool WindowAnimator::AnimateWindow(HWND targetHWnd, float iconCenterX, float iconCenterY, float iconWidth, bool isMinimizing) {
     if (!targetHWnd || !IsWindow(targetHWnd)) return false;
 

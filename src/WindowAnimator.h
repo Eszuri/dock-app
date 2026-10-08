@@ -18,6 +18,7 @@ public:
     bool AnimateWindow(HWND targetHWnd, float iconCenterX, float iconCenterY, float iconWidth, bool isMinimizing);
 
     void PrecacheWindowSnapshot(HWND hWnd);
+    bool GetSnapshotBitmap(HWND hWnd, ID2D1RenderTarget* pRT, ID2D1Bitmap** ppBitmap, int& outW, int& outH);
     void SetDockHWnd(HWND hDockWnd) { m_hDockWnd = hDockWnd; }
     HWND GetAnimWnd() const { return m_hAnimWnd; }
 
