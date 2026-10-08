@@ -915,7 +915,12 @@ void DockWindow::OnLButtonDown(int x, int y) {
     m_dragCandidateIndex = -1;
     m_isDragging = false;
     m_draggedIndex = -1;
-    m_hForegroundBeforeClick = GetForegroundWindow();
+
+    HWND fg = GetForegroundWindow();
+    if (fg && fg != m_hWnd && fg != m_hMenuWnd && fg != m_animator.GetAnimWnd()) {
+        m_hForegroundBeforeClick = fg;
+        m_lastActiveHWnd = GetAncestor(fg, GA_ROOT);
+    }
 
     for (size_t i = 0; i < m_items.size(); ++i) {
         const auto& item = m_items[i];
@@ -996,12 +1001,13 @@ void DockWindow::OnLButtonUp(int x, int y) {
 
             bool isCurrentlyActive = (hWnd == curFg || hWnd == rootFg ||
                                       hWnd == preFg || hWnd == rootPreFg ||
+                                      hWnd == m_lastActiveHWnd ||
                                       wasFg);
 
             // Also check if this unminimized window is top-most visible on desktop
             if (!isCurrentlyActive && !IsIconic(hWnd)) {
                 HWND topWnd = GetTopWindow(GetDesktopWindow());
-                while (topWnd && (!IsWindowVisible(topWnd) || IsIconic(topWnd) || topWnd == m_hWnd || topWnd == m_hMenuWnd)) {
+                while (topWnd && (!IsWindowVisible(topWnd) || IsIconic(topWnd) || topWnd == m_hWnd || topWnd == m_hMenuWnd || topWnd == m_animator.GetAnimWnd())) {
                     topWnd = GetNextWindow(topWnd, GW_HWNDNEXT);
                 }
                 if (topWnd == hWnd) {
@@ -1014,17 +1020,32 @@ void DockWindow::OnLButtonUp(int x, int y) {
             if (isMinimized) {
                 // Animate window restoring out of dock icon
                 if (!m_animator.AnimateWindow(hWnd, iconX, iconY, iconW, false /* isRestoring */)) {
-                    TaskManager::ToggleWindowState(hWnd, wasFg);
+                    TaskManager::ToggleWindowState(hWnd, true);
                 }
+                m_lastActiveHWnd = hWnd;
+                item.isForeground = true;
             } else if (isCurrentlyActive) {
                 // Animate window minimizing into dock icon
                 if (!m_animator.AnimateWindow(hWnd, iconX, iconY, iconW, true /* isMinimizing */)) {
-                    TaskManager::ToggleWindowState(hWnd, wasFg);
+                    TaskManager::ToggleWindowState(hWnd, true);
                 }
+                m_lastActiveHWnd = NULL;
+                item.isForeground = false;
             } else {
                 // Just bring background window to front
-                SetForegroundWindow(hWnd);
-                SetFocus(hWnd);
+                DWORD curThread = GetCurrentThreadId();
+                DWORD targetThread = GetWindowThreadProcessId(hWnd, NULL);
+                if (curThread != targetThread) {
+                    AttachThreadInput(curThread, targetThread, TRUE);
+                    SetForegroundWindow(hWnd);
+                    SetFocus(hWnd);
+                    AttachThreadInput(curThread, targetThread, FALSE);
+                } else {
+                    SetForegroundWindow(hWnd);
+                    SetFocus(hWnd);
+                }
+                m_lastActiveHWnd = hWnd;
+                item.isForeground = true;
             }
             // Brief delay to refresh active dot indicator
             SetTimer(m_hWnd, TIMER_CHECK_RUNNING, 300, NULL);

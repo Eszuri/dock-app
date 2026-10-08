@@ -124,6 +124,19 @@ bool WindowAnimator::CaptureWindow(HWND hWnd, HBITMAP& outBmp, void*& outBits, i
         GetWindowRect(hWnd, &rc);
     }
 
+    HMONITOR hMon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { sizeof(MONITORINFO) };
+    GetMonitorInfo(hMon, &mi);
+
+    if (IsZoomed(hWnd)) {
+        rc = mi.rcWork;
+    } else {
+        if (rc.left < mi.rcMonitor.left) rc.left = mi.rcMonitor.left;
+        if (rc.top < mi.rcMonitor.top) rc.top = mi.rcMonitor.top;
+        if (rc.right > mi.rcMonitor.right) rc.right = mi.rcMonitor.right;
+        if (rc.bottom > mi.rcMonitor.bottom) rc.bottom = mi.rcMonitor.bottom;
+    }
+
     int width = rc.right - rc.left;
     int height = rc.bottom - rc.top;
     if (width <= 0 || height <= 0) return false;
@@ -159,6 +172,16 @@ bool WindowAnimator::CaptureWindow(HWND hWnd, HBITMAP& outBmp, void*& outBits, i
         }
     }
 
+    // Ultimate fallback: fill clean dark background so capture never fails
+    if (!ok && outBits) {
+        uint32_t* px = reinterpret_cast<uint32_t*>(outBits);
+        int total = width * height;
+        for (int p = 0; p < total; ++p) {
+            px[p] = 0xFF2A2A2E;
+        }
+        ok = TRUE;
+    }
+
     SelectObject(hdcMem, hOldBmp);
     DeleteDC(hdcMem);
     ReleaseDC(NULL, hdcScreen);
@@ -180,7 +203,7 @@ bool WindowAnimator::CaptureWindow(HWND hWnd, HBITMAP& outBmp, void*& outBits, i
 
 void WindowAnimator::PrecacheWindowSnapshot(HWND hWnd) {
     if (!hWnd || !IsWindow(hWnd) || IsIconic(hWnd) || !IsWindowVisible(hWnd)) return;
-    if (m_isAnimating && m_targetHWnd == hWnd) return;
+    if (m_isAnimating) return; // Don't interrupt active animation
 
     auto it = m_snapshotCache.find(hWnd);
     if (it != m_snapshotCache.end() && !it->second.pixelData.empty()) {
@@ -540,8 +563,20 @@ void WindowAnimator::FinishAnimation() {
             } else {
                 ShowWindow(m_targetHWnd, SW_RESTORE);
             }
-            SetForegroundWindow(m_targetHWnd);
-            SetFocus(m_targetHWnd);
+
+            // Reliable foreground activation bypassing Windows restrictions
+            DWORD curThread = GetCurrentThreadId();
+            DWORD targetThread = GetWindowThreadProcessId(m_targetHWnd, NULL);
+            if (curThread != targetThread) {
+                AttachThreadInput(curThread, targetThread, TRUE);
+                SetForegroundWindow(m_targetHWnd);
+                SetFocus(m_targetHWnd);
+                AttachThreadInput(curThread, targetThread, FALSE);
+            } else {
+                SetForegroundWindow(m_targetHWnd);
+                SetFocus(m_targetHWnd);
+            }
+
             DwmSetWindowAttribute(m_targetHWnd, DWMWA_TRANSITIONS_FORCEDISABLED, &enable, sizeof(enable));
         }
     }

@@ -19,6 +19,7 @@ public:
 
     void PrecacheWindowSnapshot(HWND hWnd);
     void SetDockHWnd(HWND hDockWnd) { m_hDockWnd = hDockWnd; }
+    HWND GetAnimWnd() const { return m_hAnimWnd; }
 
     bool IsAnimating() const { return m_isAnimating; }
     void CancelAnimation();

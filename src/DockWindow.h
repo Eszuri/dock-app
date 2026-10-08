@@ -117,6 +117,7 @@ private:
     float m_dragStartX = 0.0f;
     float m_dragStartY = 0.0f;
     HWND m_hForegroundBeforeClick = nullptr;
+    HWND m_lastActiveHWnd = nullptr;
 
     // Context menu state & custom Direct2D popup window
     bool m_isMenuOpen = false;
