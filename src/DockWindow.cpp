@@ -2722,6 +2722,15 @@ LRESULT DockWindow::HandlePreviewMessage(HWND hWnd, UINT msg, WPARAM wParam, LPA
         return 0;
     }
 
+    case WM_LBUTTONDOWN: {
+        HWND fg = GetForegroundWindow();
+        if (fg && fg != m_hWnd && fg != m_hMenuWnd && fg != m_hPreviewWnd && fg != m_animator.GetAnimWnd()) {
+            m_hForegroundBeforeClick = fg;
+            m_lastActiveHWnd = GetAncestor(fg, GA_ROOT);
+        }
+        return 0;
+    }
+
     case WM_LBUTTONUP: {
         if (m_previewHoveredCard >= 0 && m_previewHoveredCard < (int)m_previewCards.size()) {
             HWND targetHWnd = m_previewCards[m_previewHoveredCard].hWnd;
@@ -2793,24 +2802,78 @@ LRESULT DockWindow::HandlePreviewMessage(HWND hWnd, UINT msg, WPARAM wParam, LPA
             int appIdx = m_previewAppIndex;
             HidePreviewPanelImmediate();
             if (targetHWnd && IsWindow(targetHWnd)) {
-                if (IsIconic(targetHWnd)) {
-                    if (appIdx >= 0 && appIdx < (int)m_items.size()) {
-                        float iconX = (float)m_screenX + m_items[appIdx].centerX;
-                        float iconY = (float)m_screenY + m_items[appIdx].y + (m_items[appIdx].height / 2.0f);
-                        float iconW = m_items[appIdx].width;
-                        m_animator.AnimateWindow(targetHWnd, iconX, iconY, iconW, false);
+                float iconX = 0.0f, iconY = 0.0f, iconW = 48.0f;
+                if (appIdx >= 0 && appIdx < (int)m_items.size()) {
+                    iconX = (float)m_screenX + m_items[appIdx].centerX;
+                    iconY = (float)m_screenY + m_items[appIdx].y + (m_items[appIdx].height / 2.0f);
+                    iconW = m_items[appIdx].width;
+                }
+
+                HWND curFg = GetForegroundWindow();
+                HWND rootFg = curFg ? GetAncestor(curFg, GA_ROOT) : NULL;
+                HWND preFg = m_hForegroundBeforeClick;
+                HWND rootPreFg = preFg ? GetAncestor(preFg, GA_ROOT) : NULL;
+
+                bool isCurrentlyActive = (targetHWnd == curFg || targetHWnd == rootFg ||
+                                          targetHWnd == preFg || targetHWnd == rootPreFg ||
+                                          targetHWnd == m_lastActiveHWnd ||
+                                          (appIdx >= 0 && m_items[appIdx].isForeground && (m_items[appIdx].openWindows.size() <= 1 || m_items[appIdx].hWnd == targetHWnd)));
+
+                // Also check if this unminimized window is top-most visible on desktop
+                if (!isCurrentlyActive && !IsIconic(targetHWnd)) {
+                    HWND topWnd = GetTopWindow(GetDesktopWindow());
+                    while (topWnd && (!IsWindowVisible(topWnd) || IsIconic(topWnd) || topWnd == m_hWnd || topWnd == m_hMenuWnd || topWnd == m_hPreviewWnd || topWnd == m_animator.GetAnimWnd())) {
+                        topWnd = GetNextWindow(topWnd, GW_HWNDNEXT);
+                    }
+                    if (topWnd == targetHWnd) {
+                        isCurrentlyActive = true;
+                    }
+                }
+
+                bool isMinimized = IsIconic(targetHWnd);
+
+                if (isMinimized) {
+                    // Animate window restoring out of dock icon (macOS style)
+                    if (appIdx >= 0 && iconW > 0.0f) {
+                        if (!m_animator.AnimateWindow(targetHWnd, iconX, iconY, iconW, false /* isRestoring */)) {
+                            TaskManager::ToggleWindowState(targetHWnd, true);
+                        }
                     } else {
                         ShowWindow(targetHWnd, SW_RESTORE);
                         SetForegroundWindow(targetHWnd);
                     }
+                    m_lastActiveHWnd = targetHWnd;
+                    if (appIdx >= 0) m_items[appIdx].isForeground = true;
+                } else if (isCurrentlyActive) {
+                    // Animate window minimizing into dock icon (macOS Genie style)!
+                    if (appIdx >= 0 && iconW > 0.0f) {
+                        if (!m_animator.AnimateWindow(targetHWnd, iconX, iconY, iconW, true /* isMinimizing */)) {
+                            TaskManager::ToggleWindowState(targetHWnd, true);
+                        }
+                    } else {
+                        ShowWindow(targetHWnd, SW_MINIMIZE);
+                    }
+                    m_lastActiveHWnd = NULL;
+                    if (appIdx >= 0) m_items[appIdx].isForeground = false;
                 } else {
-                    DWORD targetThread = GetWindowThreadProcessId(targetHWnd, NULL);
+                    // Bring background window to front
                     DWORD curThread = GetCurrentThreadId();
-                    AttachThreadInput(curThread, targetThread, TRUE);
-                    SetForegroundWindow(targetHWnd);
-                    BringWindowToTop(targetHWnd);
-                    AttachThreadInput(curThread, targetThread, FALSE);
+                    DWORD targetThread = GetWindowThreadProcessId(targetHWnd, NULL);
+                    if (curThread != targetThread) {
+                        AttachThreadInput(curThread, targetThread, TRUE);
+                        SetForegroundWindow(targetHWnd);
+                        SetFocus(targetHWnd);
+                        AttachThreadInput(curThread, targetThread, FALSE);
+                    } else {
+                        SetForegroundWindow(targetHWnd);
+                        SetFocus(targetHWnd);
+                    }
+                    m_lastActiveHWnd = targetHWnd;
+                    if (appIdx >= 0) m_items[appIdx].isForeground = true;
                 }
+
+                // Brief delay to refresh active dot indicator on dock
+                SetTimer(m_hWnd, TIMER_CHECK_RUNNING, 300, NULL);
             }
             return 0;
         }
