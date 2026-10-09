@@ -1,7 +1,6 @@
 #include "DockWindow.h"
 #include "IconHelper.h"
 #include "TaskManager.h"
-#include "Logger.h"
 #include <windowsx.h>
 #include <cmath>
 #include <shellapi.h>
@@ -67,7 +66,6 @@ bool DockWindow::Initialize(HINSTANCE hInstance) {
     );
 
     if (!m_hWnd) {
-        Log("CreateWindowExW failed");
         return false;
     }
 
@@ -433,8 +431,6 @@ void DockWindow::RefreshTaskbarItems() {
                 item.targetX = old.targetX;
                 item.x = old.x;
                 item.centerX = old.centerX;
-                item.bounceY = old.bounceY;
-                item.bounceVelocity = old.bounceVelocity;
 
                 newItems.push_back(std::move(item));
             }
@@ -464,8 +460,6 @@ void DockWindow::RefreshTaskbarItems() {
                     item.targetX = old.targetX;
                     item.x = old.x;
                     item.centerX = old.centerX;
-                    item.bounceY = old.bounceY;
-                    item.bounceVelocity = old.bounceVelocity;
 
                     for (size_t k = 0; k < openWindows.size(); ++k) {
                         if (!openWindows[k].exeFilename.empty() && openWindows[k].exeFilename == item.exeFilename) {
@@ -613,50 +607,7 @@ void DockWindow::RefreshTaskbarItems() {
         if (m_previewCards.empty()) {
             HidePreviewPanelImmediate();
         } else if (cardRemoved) {
-            RECT rcWork = {};
-            SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
-
-            size_t N = m_previewCards.size();
-            float cardW = 216.0f;
-            float cardH = 160.0f;
-            float pad = 8.0f;
-            float gap = 8.0f;
-            if (N == 1) {
-                cardW = 235.0f;
-                cardH = 167.0f;
-                pad = 0.5f;
-                gap = 0.0f;
-            }
-            int totalWidth = (int)std::ceil((pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap));
-            int totalHeight = (int)std::ceil((pad * 2.0f) + cardH);
-
-            m_previewWidth = totalWidth;
-            m_previewHeight = totalHeight;
-
-            if (m_previewAppIndex >= 0 && m_previewAppIndex < (int)m_items.size()) {
-                float iconScreenCenterX = (float)m_screenX + m_items[m_previewAppIndex].centerX;
-                int previewLeft = (int)std::round(iconScreenCenterX - (float)totalWidth / 2.0f);
-                if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
-                if (previewLeft + totalWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - totalWidth;
-                m_previewScreenX = previewLeft;
-                m_previewCurrentX = (float)previewLeft;
-                m_previewTargetX = (float)previewLeft;
-            }
-
-            for (size_t i = 0; i < m_previewCards.size(); ++i) {
-                float cx = pad + (float)i * (cardW + gap);
-                float cy = pad;
-                m_previewCards[i].cardRect = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
-                m_previewCards[i].closeBtnRect = D2D1::RectF(cx + cardW - 28.0f, cy + 4.0f, cx + cardW - 4.0f, cy + 26.0f);
-                m_previewCards[i].thumbRect = D2D1::RectF(cx + 6.0f, cy + 30.0f, cx + cardW - 6.0f, cy + cardH - 6.0f);
-            }
-
-            m_previewHoveredCard = -1;
-            m_previewCloseHovered = false;
-            m_previewThumbHovered = false;
-
-            SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, m_previewWidth, m_previewHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
-            RenderPreviewPanel();
+            RelayoutPreviewCards();
         }
     }
 
@@ -709,7 +660,7 @@ void DockWindow::UpdateLayout(bool checkHover) {
         item.height = itemH;
 
         float baseBottom = pillBottom - Config::DOCK_PADDING_Y;
-        item.y = baseBottom - itemH - item.bounceY;
+        item.y = baseBottom - itemH;
 
         if (checkHover && m_isMouseOverDock && !m_isDragging) {
             if (m_mouseX >= item.x && m_mouseX <= (item.x + item.width) &&
@@ -1025,18 +976,6 @@ void DockWindow::OnTimer() {
         }
         item.x = item.currentX;
         item.centerX = item.currentX + (item.width / 2.0f);
-
-        // 3. Vertical bounce animation
-        if (item.bounceY > 0.0f || item.bounceVelocity != 0.0f) {
-            item.bounceY += item.bounceVelocity;
-            item.bounceVelocity -= 1.8f;
-            if (item.bounceY <= 0.0f) {
-                item.bounceY = 0.0f;
-                item.bounceVelocity = 0.0f;
-            } else {
-                stillAnimating = true;
-            }
-        }
     }
 
     UpdateLayout(!m_isDragging);
@@ -1222,9 +1161,7 @@ void DockWindow::OnLButtonUp(int x, int y) {
 }
 
 enum DockMenuCmd {
-    CMD_DOCK_TITLE = 1000,
-    CMD_DOCK_REFRESH,
-    CMD_DOCK_EXIT,
+    CMD_DOCK_EXIT = 1000,
 
     CMD_APP_LAUNCH_NEW = 2000,
     CMD_APP_PIN,
@@ -1618,11 +1555,6 @@ void DockWindow::RenderMenu() {
                 m_pMenuWhiteBrush,
                 1.3f
             );
-        } else if (item.iconType == CustomMenuItem::IconType::Refresh) {
-            if (m_pMenuIconFormat) {
-                D2D1_RECT_F glyphRect = D2D1::RectF(iconBoxX - 2.0f, iconBoxY - 2.0f, iconBoxX + 18.0f, iconBoxY + 18.0f);
-                m_pDCRT->DrawTextW(L"\uE72C", 1, m_pMenuIconFormat, glyphRect, m_pMenuTextBrush);
-            }
         } else if (item.iconType == CustomMenuItem::IconType::Exit) {
             if (m_pMenuIconFormat) {
                 D2D1_RECT_F glyphRect = D2D1::RectF(iconBoxX - 2.0f, iconBoxY - 2.0f, iconBoxX + 18.0f, iconBoxY + 18.0f);
@@ -1888,10 +1820,6 @@ void DockWindow::ShowModernDockContextMenu() {
 void DockWindow::ExecuteMenuCommand(int cmd, HWND targetHWnd) {
     if (cmd == CMD_DOCK_EXIT) {
         PostQuitMessage(0);
-        return;
-    }
-    if (cmd == CMD_DOCK_REFRESH) {
-        RefreshTaskbarItems();
         return;
     }
 
@@ -2444,6 +2372,58 @@ void DockWindow::HidePreviewPanelImmediate() {
     Render();
 }
 
+void DockWindow::RelayoutPreviewCards() {
+    if (m_previewCards.empty()) {
+        HidePreviewPanelImmediate();
+        return;
+    }
+
+    RECT rcWork = {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
+
+    size_t N = m_previewCards.size();
+    float cardW = 216.0f;
+    float cardH = 160.0f;
+    float pad = 8.0f;
+    float gap = 8.0f;
+    if (N == 1) {
+        cardW = 235.0f;
+        cardH = 167.0f;
+        pad = 0.5f;
+        gap = 0.0f;
+    }
+    int totalWidth = (int)std::ceil((pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap));
+    int totalHeight = (int)std::ceil((pad * 2.0f) + cardH);
+
+    m_previewWidth = totalWidth;
+    m_previewHeight = totalHeight;
+
+    if (m_previewAppIndex >= 0 && m_previewAppIndex < (int)m_items.size()) {
+        float iconScreenCenterX = (float)m_screenX + m_items[m_previewAppIndex].centerX;
+        int previewLeft = (int)std::round(iconScreenCenterX - (float)totalWidth / 2.0f);
+        if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
+        if (previewLeft + totalWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - totalWidth;
+        m_previewScreenX = previewLeft;
+        m_previewCurrentX = (float)previewLeft;
+        m_previewTargetX = (float)previewLeft;
+    }
+
+    for (size_t i = 0; i < m_previewCards.size(); ++i) {
+        float cx = pad + (float)i * (cardW + gap);
+        float cy = pad;
+        m_previewCards[i].cardRect = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
+        m_previewCards[i].closeBtnRect = D2D1::RectF(cx + cardW - 28.0f, cy + 4.0f, cx + cardW - 4.0f, cy + 26.0f);
+        m_previewCards[i].thumbRect = D2D1::RectF(cx + 6.0f, cy + 30.0f, cx + cardW - 6.0f, cy + cardH - 6.0f);
+    }
+
+    m_previewHoveredCard = -1;
+    m_previewCloseHovered = false;
+    m_previewThumbHovered = false;
+
+    SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, m_previewWidth, m_previewHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
+    RenderPreviewPanel();
+}
+
 void DockWindow::OnPreviewAnimTimer() {
     bool stillAnimating = false;
 
@@ -2745,53 +2725,7 @@ LRESULT DockWindow::HandlePreviewMessage(HWND hWnd, UINT msg, WPARAM wParam, LPA
                         m_previewCards[m_previewHoveredCard].pThumbnail->Release();
                     }
                     m_previewCards.erase(m_previewCards.begin() + m_previewHoveredCard);
-
-                    // Re-layout remaining cards
-                    RECT rcWork = {};
-                    SystemParametersInfoW(SPI_GETWORKAREA, 0, &rcWork, 0);
-
-                    size_t N = m_previewCards.size();
-                    float cardW = 216.0f;
-                    float cardH = 160.0f;
-                    float pad = 8.0f;
-                    float gap = 8.0f;
-                    if (N == 1) {
-                        cardW = 235.0f;
-                        cardH = 167.0f;
-                        pad = 0.5f;
-                        gap = 0.0f;
-                    }
-                    int totalWidth = (int)std::ceil((pad * 2.0f) + ((float)N * cardW) + ((float)(N - 1) * gap));
-                    int totalHeight = (int)std::ceil((pad * 2.0f) + cardH);
-
-                    m_previewWidth = totalWidth;
-                    m_previewHeight = totalHeight;
-
-                    // Re-center flyout above the dock icon
-                    if (m_previewAppIndex >= 0 && m_previewAppIndex < (int)m_items.size()) {
-                        float iconScreenCenterX = (float)m_screenX + m_items[m_previewAppIndex].centerX;
-                        int previewLeft = (int)std::round(iconScreenCenterX - (float)totalWidth / 2.0f);
-                        if (previewLeft < rcWork.left + 8) previewLeft = rcWork.left + 8;
-                        if (previewLeft + totalWidth > rcWork.right - 8) previewLeft = rcWork.right - 8 - totalWidth;
-                        m_previewScreenX = previewLeft;
-                        m_previewCurrentX = (float)previewLeft;
-                        m_previewTargetX = (float)previewLeft;
-                    }
-
-                    for (size_t i = 0; i < m_previewCards.size(); ++i) {
-                        float cx = pad + (float)i * (cardW + gap);
-                        float cy = pad;
-                        m_previewCards[i].cardRect = D2D1::RectF(cx, cy, cx + cardW, cy + cardH);
-                        m_previewCards[i].closeBtnRect = D2D1::RectF(cx + cardW - 28.0f, cy + 4.0f, cx + cardW - 4.0f, cy + 26.0f);
-                        m_previewCards[i].thumbRect = D2D1::RectF(cx + 6.0f, cy + 30.0f, cx + cardW - 6.0f, cy + cardH - 6.0f);
-                    }
-
-                    m_previewHoveredCard = -1;
-                    m_previewCloseHovered = false;
-                    m_previewThumbHovered = false;
-
-                    SetWindowPos(m_hPreviewWnd, HWND_TOPMOST, m_previewScreenX, m_previewScreenY, m_previewWidth, m_previewHeight, SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW);
-                    RenderPreviewPanel();
+                    RelayoutPreviewCards();
                 } else {
                     HidePreviewPanelImmediate();
                 }

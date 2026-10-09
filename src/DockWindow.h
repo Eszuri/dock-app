@@ -57,7 +57,6 @@ private:
     void CleanupMenuWindow();
     void CreateMenuDIBBuffer(int width, int height);
     void RenderMenu();
-    bool IsMenuOpen() const { return m_isMenuOpen; }
     RECT GetMenuScreenRect() const;
 
     // Window App Preview Panel (Native Windows style)
@@ -68,8 +67,8 @@ private:
     void HidePreviewPanel();
     void HidePreviewPanelImmediate();
     void RenderPreviewPanel();
+    void RelayoutPreviewCards();
     void OnPreviewAnimTimer();
-    bool IsPreviewOpen() const { return m_isPreviewOpen; }
 
     static LRESULT CALLBACK PreviewWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
     LRESULT HandlePreviewMessage(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -144,7 +143,6 @@ private:
             Pin,
             Unpin,
             Close,
-            Refresh,
             Exit,
             None
         } iconType = IconType::None;

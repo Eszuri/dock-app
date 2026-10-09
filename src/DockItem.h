@@ -38,10 +38,6 @@ struct DockItem {
     float height = Config::BASE_ICON_SIZE;
     float centerX = 0.0f;
 
-    // Bounce animation on click
-    float bounceY = 0.0f;
-    float bounceVelocity = 0.0f;
-
     DockItem() = default;
 
     DockItem(const DockItem&) = delete;
@@ -67,8 +63,6 @@ struct DockItem {
         , width(other.width)
         , height(other.height)
         , centerX(other.centerX)
-        , bounceY(other.bounceY)
-        , bounceVelocity(other.bounceVelocity)
     {
         other.pBitmap = nullptr;
     }
@@ -96,8 +90,6 @@ struct DockItem {
             width = other.width;
             height = other.height;
             centerX = other.centerX;
-            bounceY = other.bounceY;
-            bounceVelocity = other.bounceVelocity;
         }
         return *this;
     }

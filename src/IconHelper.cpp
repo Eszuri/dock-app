@@ -3,7 +3,6 @@
 #include <shellapi.h>
 #include <commctrl.h>
 #include <commoncontrols.h>
-#include <iostream>
 #include <vector>
 #include <cmath>
 #include <algorithm>

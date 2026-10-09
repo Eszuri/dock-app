@@ -1,14 +1,6 @@
 #pragma once
 #include <windows.h>
-#include <string>
-#include <vector>
-
-struct AppShortcut {
-    std::wstring name;
-    std::wstring targetPath;
-    std::wstring arguments;
-    std::wstring iconSource; // Optional: specific path or dll for icon
-};
+#include <d2d1.h>
 
 namespace Config {
     // Sizing (Logical pixels)
@@ -33,17 +25,4 @@ namespace Config {
 
     // Indicator dot color (active app)
     constexpr D2D1_COLOR_F INDICATOR_COLOR = { 0.90f, 0.90f, 0.95f, 0.85f };
-
-    // Default applications to pin
-    inline std::vector<AppShortcut> GetDefaultApps() {
-        return {
-            { L"File Explorer", L"explorer.exe", L"", L"shell32.dll" },
-            { L"Terminal / CMD", L"cmd.exe", L"", L"" },
-            { L"Notepad", L"notepad.exe", L"", L"" },
-            { L"Task Manager", L"taskmgr.exe", L"", L"" },
-            { L"Calculator", L"calc.exe", L"", L"" },
-            { L"Microsoft Edge", L"msedge.exe", L"", L"" },
-            { L"Settings", L"ms-settings:", L"", L"shell32.dll" }
-        };
-    }
 }

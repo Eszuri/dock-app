@@ -22,7 +22,6 @@ public:
     void SetDockHWnd(HWND hDockWnd) { m_hDockWnd = hDockWnd; }
     HWND GetAnimWnd() const { return m_hAnimWnd; }
 
-    bool IsAnimating() const { return m_isAnimating; }
     void CancelAnimation();
 
     static LRESULT CALLBACK AnimWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);

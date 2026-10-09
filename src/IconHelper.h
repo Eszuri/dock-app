@@ -31,7 +31,6 @@ public:
 private:
     static IWICImagingFactory* s_pWicFactory;
 
-    static HICON ExtractBestIcon(const std::wstring& path, const std::wstring& iconSource);
     static ID2D1Bitmap* WicBitmapToD2D(ID2D1RenderTarget* pRT, IWICBitmapSource* pSource);
     static ID2D1Bitmap* CreateFallbackBitmap(ID2D1RenderTarget* pRT, const std::wstring& label);
 };
